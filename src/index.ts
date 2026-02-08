@@ -60,6 +60,7 @@ app.get('/ws', (c) => {
         servers: wsManager.getServerCount(),
         proxies: wsManager.getProxyCount()
       }
+    }
   });
 });
 

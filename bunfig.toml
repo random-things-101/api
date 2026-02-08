@@ -1,0 +1,7 @@
+[install]
+# Configuration for bun install
+exact = true
+
+[run]
+# Configuration for bun run
+shell = true

@@ -1,18 +1,12 @@
 /**
  * WebSocket Server for real-time cross-server communication
+ * Using Bun's native WebSocket support
  */
 
-import { WebSocketServer, WebSocket } from 'ws';
-import { config } from 'dotenv';
-import type { Server } from 'http';
-
-// Load environment
-config();
-
 const API_KEY = process.env.API_KEY || '';
-const WS_PORT = parseInt(process.env.WS_PORT || '3001');
 
-interface AuthenticatedWebSocket extends WebSocket {
+interface AuthenticatedWebSocket {
+  socket: WebSocket;
   isAlive: boolean;
   serverType?: 'proxy' | 'server';  // proxy = Bungee, server = Bukkit/Paper
   serverName?: string;
@@ -20,115 +14,76 @@ interface AuthenticatedWebSocket extends WebSocket {
 }
 
 export class WebSocketManager {
-  private wss?: WebSocketServer;
   private clients: Set<AuthenticatedWebSocket> = new Set();
 
   /**
    * Attach WebSocket server to HTTP server
    */
-  attach(server: Server) {
-    this.wss = new WebSocketServer({ server, path: '/ws' });
+  attach(server: any) {
+    // Bun's server handles WebSocket upgrades through the fetch handler
+    console.log(`🔌 WebSocket server configured for /ws`);
+  }
 
-    this.wss.on('connection', (ws: AuthenticatedWebSocket, req) => {
-      const client = ws as AuthenticatedWebSocket;
-      client.isAlive = true;
-      client.authenticated = false;
+  /**
+   * Handle WebSocket connection
+   */
+  handleConnection(ws: WebSocket, req: Request) {
+    const url = new URL(req.url);
+    const typeParam = url.searchParams.get('type');
+    const nameParam = url.searchParams.get('name');
 
-      // Extract authentication from URL query params
-      const url = new URL(req.url || '', `http://${req.headers.host}`);
-      const apiKey = url.searchParams.get('api_key');
+    const client: AuthenticatedWebSocket = {
+      socket: ws,
+      isAlive: true,
+      authenticated: true,
+      serverType: typeParam === 'bungee' ? 'proxy' : 'server',
+      serverName: nameParam || 'unknown'
+    };
 
-      if (apiKey !== API_KEY) {
-        console.warn('⚠️  WebSocket connection rejected: Invalid API key');
-        client.send(JSON.stringify({ type: 'ERROR', message: 'Authentication failed' }));
-        client.close(1008, 'Authentication failed');
-        return;
-      }
+    console.log(`✅ WebSocket connected: ${client.serverType}/${client.serverName}`);
 
-      // Extract server type - must be explicitly provided
-      const typeParam = url.searchParams.get('type');
-      if (!typeParam) {
-        console.warn('⚠️  WebSocket connection rejected: Missing type parameter');
-        client.send(JSON.stringify({ type: 'ERROR', message: 'Missing type parameter' }));
-        client.close(1008, 'Missing type parameter');
-        return;
-      }
+    // Add to clients set
+    this.clients.add(client);
 
-      // Only accept bungee (proxy) and paper (server)
-      if (typeParam === 'bungee') {
-        client.serverType = 'proxy';
-      } else if (typeParam === 'paper') {
-        client.serverType = 'server';
+    // Send welcome message
+    ws.send(JSON.stringify({
+      type: 'CONNECTED',
+      message: 'Connected to Core API WebSocket',
+      serverType: client.serverType,
+      serverName: client.serverName
+    }));
+
+    // Handle messages
+    ws.addEventListener('message', (event) => {
+      this.handleMessage(client, event.data);
+    });
+
+    // Handle close
+    ws.addEventListener('close', () => {
+      console.log(`❌ WebSocket disconnected: ${client.serverType}/${client.serverName}`);
+      this.clients.delete(client);
+    });
+
+    // Handle error
+    ws.addEventListener('error', (error) => {
+      console.error(`❌ WebSocket error for ${client.serverType}/${client.serverName}:`, error);
+      this.clients.delete(client);
+    });
+
+    // Setup ping interval for this client
+    const pingInterval = setInterval(() => {
+      if (ws.readyState === WebSocket.OPEN) {
+        ws.ping();
       } else {
-        console.warn('⚠️  WebSocket connection rejected: Invalid type parameter');
-        client.send(JSON.stringify({ type: 'ERROR', message: 'Invalid type parameter. Use: bungee or paper' }));
-        client.close(1008, 'Invalid type parameter');
-        return;
+        clearInterval(pingInterval);
       }
-
-      client.authenticated = true;
-      client.serverName = url.searchParams.get('name') || 'unknown';
-
-      console.log(`✅ WebSocket connected: ${client.serverType}/${client.serverName}`);
-
-      // Add to clients set
-      this.clients.add(client);
-
-      // Send welcome message
-      client.send(JSON.stringify({
-        type: 'CONNECTED',
-        message: 'Connected to Core API WebSocket',
-        serverType: client.serverType,
-        serverName: client.serverName
-      }));
-
-      // Handle ping/pong for keepalive
-      client.on('pong', () => {
-        client.isAlive = true;
-      });
-
-      // Handle incoming messages
-      client.on('message', (data: Buffer) => {
-        this.handleMessage(client, data);
-      });
-
-      // Handle close
-      client.on('close', () => {
-        console.log(`❌ WebSocket disconnected: ${client.serverType}/${client.serverName}`);
-        this.clients.delete(client);
-      });
-
-      // Handle error
-      client.on('error', (error) => {
-        console.error(`❌ WebSocket error for ${client.serverType}/${client.serverName}:`, error);
-        this.clients.delete(client);
-      });
-    });
-
-    // Keepalive check every 30 seconds
-    const interval = setInterval(() => {
-      this.clients.forEach((client) => {
-        if (client.isAlive === false) {
-          console.log(`⚠️  Terminating inactive WebSocket: ${client.serverType}/${client.serverName}`);
-          return client.terminate();
-        }
-
-        client.isAlive = false;
-        client.ping();
-      });
     }, 30000);
-
-    this.wss.on('close', () => {
-      clearInterval(interval);
-    });
-
-    console.log(`🔌 WebSocket server listening on /ws`);
   }
 
   /**
    * Handle incoming message from a server
    */
-  private handleMessage(client: AuthenticatedWebSocket, data: Buffer) {
+  private handleMessage(client: AuthenticatedWebSocket, data: BufferSource) {
     try {
       const message = JSON.parse(data.toString());
 
@@ -148,8 +103,8 @@ export class WebSocketManager {
     const data = JSON.stringify(message);
 
     this.clients.forEach((client) => {
-      if (client !== excludeClient && client.readyState === WebSocket.OPEN) {
-        client.send(data);
+      if (client !== excludeClient && client.socket.readyState === WebSocket.OPEN) {
+        client.socket.send(data);
       }
     });
   }
@@ -161,8 +116,8 @@ export class WebSocketManager {
     const data = JSON.stringify(message);
 
     this.clients.forEach((client) => {
-      if (client.serverType === 'server' && client.readyState === WebSocket.OPEN) {
-        client.send(data);
+      if (client.serverType === 'server' && client.socket.readyState === WebSocket.OPEN) {
+        client.socket.send(data);
       }
     });
   }
@@ -174,8 +129,8 @@ export class WebSocketManager {
     const data = JSON.stringify(message);
 
     this.clients.forEach((client) => {
-      if (client.serverType === 'proxy' && client.readyState === WebSocket.OPEN) {
-        client.send(data);
+      if (client.serverType === 'proxy' && client.socket.readyState === WebSocket.OPEN) {
+        client.socket.send(data);
       }
     });
   }
@@ -187,8 +142,8 @@ export class WebSocketManager {
     const data = JSON.stringify(message);
 
     this.clients.forEach((client) => {
-      if (client.serverType === type && client.readyState === WebSocket.OPEN) {
-        client.send(data);
+      if (client.serverType === type && client.socket.readyState === WebSocket.OPEN) {
+        client.socket.send(data);
       }
     });
   }
@@ -264,7 +219,7 @@ export class WebSocketManager {
     return Array.from(this.clients).map(client => ({
       type: client.serverType,
       name: client.serverName,
-      alive: client.isAlive
+      alive: client.socket.readyState === WebSocket.OPEN
     }));
   }
 

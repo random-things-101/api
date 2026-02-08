@@ -120,12 +120,45 @@ async function start() {
 
   // Start HTTP server with WebSocket support
   const server = serve({
-    fetch: app.fetch,
+    fetch(req) {
+      const url = new URL(req.url);
+
+      // Check if this is a WebSocket upgrade request to /ws
+      if (url.pathname === '/ws') {
+        // Validate query parameters before upgrade
+        const apiKey = url.searchParams.get('api_key');
+        const typeParam = url.searchParams.get('type');
+
+        if (apiKey !== process.env.API_KEY) {
+          return new Response('Authentication failed', { status: 401 });
+        }
+
+        if (!typeParam || (typeParam !== 'bungee' && typeParam !== 'paper')) {
+          return new Response('Missing or invalid type parameter', { status: 400 });
+        }
+
+        // Return undefined to signal WebSocket upgrade acceptance
+        return undefined;
+      }
+
+      // Handle regular HTTP requests with Hono
+      return app.fetch(req);
+    },
     hostname: host,
     port: port,
+    websocket: {
+      open(ws) {
+        wsManager.handleConnection(ws, ws.data as any);
+      },
+      message(ws, message) {
+        // Message handling is done via event listeners in handleConnection
+      },
+      close(ws, code, reason) {
+        // Close handling is done via event listeners in handleConnection
+      },
+    },
   });
 
-  // Attach WebSocket server to HTTP server
   wsManager.attach(server);
 
   console.log(`✨ Core API is running at http://${host}:${port}`);

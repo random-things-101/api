@@ -69,32 +69,10 @@ app.get('/', (c) => {
   return c.json({
     name: 'Core API',
     version: '1.0.0',
-    description: 'REST API for Minecraft Core plugin (BungeeCord + Paper)',
-    features: {
-      rest: 'REST API',
-      websocket: 'WebSocket for real-time updates',
-      database: 'SQLite'
-    },
-    supportedServers: {
-      proxy: 'BungeeCord',
-      servers: 'Paper'
-    },
     endpoints: {
       api: '/api',
       websocket: '/ws',
-      players: '/api/players',
-      grants: '/api/grants',
-      ranks: '/api/ranks',
-      punishments: '/api/punishments',
-      health: '/api/health',
-      websocketInfo: '/ws'
-    },
-    connections: {
-      http: `http://${host}:${port}`,
-      websocket: `ws://${host}:${port}/ws`,
-      connectedServers: wsManager.getConnectionCount(),
-      servers: wsManager.getServerCount(),
-      proxies: wsManager.getProxyCount()
+      health: '/api/health'
     }
   });
 });
